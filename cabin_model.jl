@@ -123,13 +123,16 @@ One heat-transfer surface of the cabin (a wall panel or a window).
 
 `tilt` is the angle between the outward normal and the vertical:
     0° = faces the sky (roof), 90° = vertical wall, 180° = faces the ground (floor).
+    In between the surface is INCLINED: a windshield that leans 40° backwards has tilt = 50°.
 `azimuth` is the compass direction the surface faces (0° = N, 90° = E, 180° = S, 270° = W).
 
 A window and the panel around it are two `Surface`s that belong to the same FACE of the
 cabin. The convection correlations need the size of the whole face, not of the part:
-    `face`   = (length along the driving direction, other length) of the whole face [m]
-    `L_flow` = length the outside air travels along the face (forced convection)    [m]
-    `L_vert` = vertical height of the face (natural convection on a wall)           [m]
+    `face`    = the two side lengths of the whole face; for a horizontal face the first
+                one is the length along the driving direction                        [m]
+    `L_flow`  = length the outside air travels along the face (forced convection)    [m]
+    `L_slope` = length from the bottom edge to the top edge, measured ALONG the surface
+                (natural convection on a wall; = the height for a vertical wall)     [m]
 """
 Base.@kwdef struct Surface
     name::String
@@ -139,7 +142,7 @@ Base.@kwdef struct Surface
     azimuth::Float64 = 0.0           # [°]
     face::Tuple{Float64,Float64}     # [m]
     L_flow::Float64 = face[1]        # [m]
-    L_vert::Float64 = face[2]        # [m]
+    L_slope::Float64 = face[2]       # [m]
     sheltered::Bool = false          # true: no sun, no sky; it "sees" objects at air temperature
     wind::Float64 = 1.0              # fraction of the vehicle speed felt by this surface (0..1)
 end
@@ -220,6 +223,7 @@ end
 
 const Re_transition    = 5e5    # laminar -> turbulent boundary layer on a flat plate
 const HORIZONTAL_LIMIT = 5.0    # a surface within 5° of horizontal is treated as horizontal
+const VERTICAL_LIMIT   = 2.0    # a surface within 2° of vertical is treated as vertical
 
 "Properties of dry air at temperature T [K] and pressure p [Pa] (CoolProp)."
 function air_properties(T, p)
@@ -237,52 +241,108 @@ end
 Natural convection on one side of surface `s`. `tilt` is the tilt of THAT side:
 the outside of the roof faces up (0°), but the inside of the roof faces down (180°).
 
-Three configurations (A Heat Transfer Textbook, chapter 8):
-  * vertical or inclined plate : Churchill-Chu, eq. 8.13b, L = height,
-                                 gravity replaced by its component along the plate
-  * horizontal, UNSTABLE       : hot side up or cold side down -> air can rise/fall freely
-                                 eq. 8.35 (Ra ≥ 1e7) or 8.37a (Ra < 1e7), L = area/perimeter
-  * horizontal, STABLE         : hot side down or cold side up -> air is trapped, low h
-                                 eq. 8.38, L = short side of the plate
+First question: is this side STABLE or UNSTABLE?
+  * UNSTABLE = hot side facing up, or cold side facing down. The warm air wants to rise
+    away from the surface (or the cold air to fall away from it): it leaves the surface
+    as plumes, which mixes the air well -> high h.
+  * STABLE   = hot side facing down, or cold side facing up. The air is pressed against
+    the surface and can only creep along it -> low h.
+
+Five configurations (A Heat Transfer Textbook, section 8.4):
+  * vertical             : eq. 8.13b (Churchill-Chu), L = height
+  * horizontal, unstable : eq. 8.35 (Ra ≥ 1e7) or 8.37a (Ra < 1e7), L = area/perimeter
+  * horizontal, stable   : eq. 8.38, L = short side of the plate
+  * INCLINED, stable     : the air slides along the plate, driven by the part of gravity
+                           that is parallel to the plate -> vertical-plate formula for a
+                           laminar boundary layer (eq. 8.13a) with g replaced by g_along
+  * INCLINED, unstable   : two mechanisms compete (rule of Raithby & Hollands):
+                           (1) flow along the plate : vertical formula with g_along
+                           (2) plumes leaving the plate : horizontal formula with g_normal
+                           compute both and keep the LARGER heat transfer coefficient.
+
+The two components of gravity, with `tilt` = angle between the normal and the vertical:
+    g_along  = g·sin(tilt)      (the textbook writes g·cos θ, θ measured from the vertical)
+    g_normal = g·|cos(tilt)|    (the textbook writes g·sin θ)
+
 Air properties at the film temperature (average of surface and air), β = 1/T_film.
 """
 function natural_convection(s::Surface, tilt, T_s, T_air, p)
     air = air_properties((T_s + T_air) / 2, p)
+    Pr  = air.Pr
     ΔT  = max(abs(T_s - T_air), 0.01)                     # avoid h = 0 when ΔT = 0
-    Rayleigh(L, g) = g * air.β * ΔT * L^3 / air.ν^2 * air.Pr     # Ra = Gr·Pr
-    a, b = s.face
+    Rayleigh(L, g) = g * air.β * ΔT * L^3 / air.ν^2 * Pr  # Ra = Gr·Pr
 
-    if HORIZONTAL_LIMIT <= tilt <= 180 - HORIZONTAL_LIMIT
-        L    = s.L_vert
-        Ra   = Rayleigh(L, g0 * sind(tilt))               # sind(90°) = 1 for a vertical wall
-        Nu   = (0.825 + 0.387 * Ra^(1 / 6) / (1 + (0.492 / air.Pr)^(9 / 16))^(8 / 27))^2
-        corr = "vertical plate, Churchill-Chu (AHTT 8.13b)"
+    a, b     = s.face
+    L_AP     = a * b / (2 * (a + b))                      # area / perimeter of the face
+    g_along  = g0 * sind(tilt)                            # gravity component along the surface
+    g_normal = g0 * abs(cosd(tilt))                       # gravity component normal to it
+
+    faces_up   = tilt < 90
+    hot        = T_s > T_air
+    unstable   = faces_up == hot                          # hot & up, or cold & down
+    horizontal = tilt < HORIZONTAL_LIMIT || tilt > 180 - HORIZONTAL_LIMIT
+    vertical   = abs(tilt - 90) <= VERTICAL_LIMIT
+
+    if vertical
+        L     = s.L_slope
+        Ra    = Rayleigh(L, g0)
+        Nu    = Nu_vertical(Ra, Pr)
+        corr  = "vertical plate, Churchill-Chu (AHTT 8.13b)"
         valid = 0.1 <= Ra <= 1e12
-    else
-        faces_up = tilt < 90
-        hot      = T_s > T_air
-        if faces_up == hot                                # hot & up, or cold & down
-            L  = a * b / (2 * (a + b))                    # area / perimeter
-            Ra = Rayleigh(L, g0)
-            if Ra >= 1e7
-                Nu    = 0.14 * Ra^(1 / 3) * (1 + 0.0107 * air.Pr) / (1 + 0.01 * air.Pr)
-                corr  = "horizontal unstable (AHTT 8.35)"
-                valid = Ra <= 2e11
-            else
-                Nu    = 0.56 * Ra^(1 / 4) / (1 + (0.492 / air.Pr)^(9 / 16))^(4 / 9)
-                corr  = "horizontal unstable (AHTT 8.37a)"
-                valid = Ra > 1
-            end
-        else                                              # hot & down, or cold & up
-            L     = min(a, b)
-            Ra    = Rayleigh(L, g0)
-            Nu    = 0.58 * Ra^(1 / 5)
-            corr  = "horizontal stable (AHTT 8.38)"
-            valid = 1e6 <= Ra <= 1e11
+    elseif horizontal && unstable
+        L     = L_AP
+        Ra    = Rayleigh(L, g0)
+        Nu, eq, valid = Nu_horizontal_unstable(Ra, Pr)
+        corr  = "horizontal unstable (AHTT $eq)"
+    elseif horizontal                                     # ... and stable
+        L     = min(a, b)
+        Ra    = Rayleigh(L, g0)
+        Nu    = 0.58 * Ra^(1 / 5)
+        corr  = "horizontal stable (AHTT 8.38)"
+        valid = 1e6 <= Ra <= 1e11
+    elseif unstable                                       # inclined and unstable
+        # (1) flow along the plate
+        L1  = s.L_slope
+        Ra1 = Rayleigh(L1, g_along)
+        Nu1 = Nu_vertical(Ra1, Pr)
+        # (2) plumes leaving the plate
+        L2  = L_AP
+        Ra2 = Rayleigh(L2, g_normal)
+        Nu2, eq, valid2 = Nu_horizontal_unstable(Ra2, Pr)
+        # keep the mechanism that transfers the most heat (compare h, not Nu: L differs)
+        if Nu1 / L1 >= Nu2 / L2
+            L, Ra, Nu, valid = L1, Ra1, Nu1, 0.1 <= Ra1 <= 1e12
+            corr = "inclined unstable (AHTT 8.13b, g along)"
+        else
+            L, Ra, Nu, valid = L2, Ra2, Nu2, valid2
+            corr = "inclined unstable (AHTT $eq, g normal)"
         end
+    else                                                  # inclined and stable
+        L     = s.L_slope
+        Ra    = Rayleigh(L, g_along)
+        Nu    = Nu_vertical_laminar(Ra, Pr)
+        corr  = "inclined stable (AHTT 8.13a, g along)"
+        valid = 1e5 <= Ra <= 1e11
     end
     return (h = Nu * air.k / L, mode = "natural", corr = corr, L = L,
             Re = NaN, Ra = Ra, Ri = Inf, Nu = Nu, valid = valid)
+end
+
+# The correlations themselves (A Heat Transfer Textbook, chapter 8):
+
+"Vertical plate, laminar and turbulent boundary layer: Churchill-Chu, AHTT eq. 8.13b."
+Nu_vertical(Ra, Pr) = (0.825 + 0.387 * Ra^(1 / 6) / (1 + (0.492 / Pr)^(9 / 16))^(8 / 27))^2
+
+"Vertical plate, laminar boundary layer only: Churchill-Chu, AHTT eq. 8.13a."
+Nu_vertical_laminar(Ra, Pr) = 0.68 + 0.670 * Ra^(1 / 4) / (1 + (0.492 / Pr)^(9 / 16))^(4 / 9)
+
+"Horizontal plate, unstable side. Returns (Nu, equation number, inside validity range?)."
+function Nu_horizontal_unstable(Ra, Pr)
+    if Ra >= 1e7                                          # turbulent plumes: h independent of L
+        return 0.14 * Ra^(1 / 3) * (1 + 0.0107 * Pr) / (1 + 0.01 * Pr), "8.35", Ra <= 2e11
+    else
+        return 0.56 * Ra^(1 / 4) / (1 + (0.492 / Pr)^(9 / 16))^(4 / 9), "8.37a", Ra > 1
+    end
 end
 
 """

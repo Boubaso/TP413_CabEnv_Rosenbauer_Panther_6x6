@@ -26,8 +26,8 @@ armour = Wall(name = "steel + spall liner",
 pw4_surfaces = [
     Surface(name = "Roof",  wall = armour, A = lv * wv, tilt = 0.0,   face = (lv, wv)),
     Surface(name = "Floor", wall = armour, A = lv * wv, tilt = 180.0, face = (lv, wv), sheltered = true),
-    Surface(name = "Front", wall = armour, A = wv * hv, tilt = 90.0,  face = (hv, wv), L_vert = hv),
-    Surface(name = "Rear",  wall = armour, A = wv * hv, tilt = 90.0,  face = (hv, wv), L_vert = hv),
+    Surface(name = "Front", wall = armour, A = wv * hv, tilt = 90.0,  face = (hv, wv), L_slope = hv),
+    Surface(name = "Rear",  wall = armour, A = wv * hv, tilt = 90.0,  face = (hv, wv), L_slope = hv),
     Surface(name = "Side E", wall = armour, A = lv * hv, tilt = 90.0, face = (lv, hv)),
     Surface(name = "Side W", wall = armour, A = lv * hv, tilt = 90.0, face = (lv, hv)),
 ]
