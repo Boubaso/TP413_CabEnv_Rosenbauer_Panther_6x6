@@ -1,8 +1,7 @@
 #=
 cabin_model.jl
 ==============
-Steady-state thermal model of a vehicle cabin, following the method of PW4
-(TP413 Cabin Environment of Military Platforms).
+Steady-state thermal model of a vehicle cabin.
 
 This file contains ONLY the physics (functions and data types). It knows nothing
 about the Panther: the vehicle data and the design cases are in `panther_6x6.jl`.
