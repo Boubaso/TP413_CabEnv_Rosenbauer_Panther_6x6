@@ -18,10 +18,28 @@ include("cabin_model.jl")
 # ==========================================================================================
 # 1. THE CABIN: geometry
 # ==========================================================================================
-# The crew cab is simplified to a box (as in PW4). Dimensions estimated from the dimensional
-# drawing of the brochure (vehicle width 3.0 m, height 3.65 m).
+# The crew cab is simplified to a box with the upper front edge cut off by the inclined
+# windshield (a prism: the same cross-section over the whole width). Side view:
+#
+#                          L_roof
+#                   ____________________
+#                  /|                   |
+#                 /r|                   |          r = rake = angle between the
+#    windshield  /  | rise              |              glass and the vertical
+#    (slant)    /   |                   |  H_cab
+#              /    |                   |          (rear wall, against the
+#             /_____|                   |           superstructure)
+#            |  run                     |
+#     front  |                          |
+#     panel  | h_sill                   |
+#            |__________________________|
+#                       L_cab
+#        <-- driving direction
+#
+# Dimensions estimated from the dimensional drawing of the brochure (vehicle width 3.0 m,
+# height 3.65 m).
 
-L_cab = 2.6     # length, in the driving direction [m]                         [ASSUMED from drawing]
+L_cab = 2.6     # length at floor level, in the driving direction [m]          [ASSUMED from drawing]
 W_cab = 3.0     # width  [m]                                                   [SPEC: vehicle width]
 H_cab = 2.0     # height floor -> roof [m]                                     [ASSUMED from drawing]
 
@@ -29,7 +47,24 @@ H_cab = 2.0     # height floor -> roof [m]                                     [
 A_windshield  = 5.0     # [m²]                                                 [ASSUMED]
 A_side_window = 1.9     # per side [m²]                                        [ASSUMED]
 A_roof_window = 0.95    # [m²]                                                 [ASSUMED]
-tilt_windshield = 75.0  # the windshield leans backwards: 90° = vertical       [ASSUMED]
+
+# The windshield leans backwards. `rake` = angle between the glass and the VERTICAL.
+# (If the 40° is measured from the horizontal instead, put 50.0 here.)
+rake_windshield = 40.0                     # [°]                               [ASSUMED from drawing]
+tilt_windshield = 90.0 - rake_windshield   # angle between its normal and the vertical (model convention)
+
+# Everything else follows from these numbers. The windshield takes the full width of the cab:
+slant_windshield = A_windshield / W_cab                 # length of the glass along the slope [m]
+rise_windshield  = slant_windshield * cosd(rake_windshield)   # height it covers [m]
+run_windshield   = slant_windshield * sind(rake_windshield)   # how far it leans back [m]
+h_sill = H_cab - rise_windshield       # height of the vertical front panel under the glass [m]
+L_roof = L_cab - run_windshield        # the roof is shorter than the floor [m]
+@assert h_sill > 0 && L_roof > 0 "the windshield does not fit in the cab: check the geometry"
+
+# A side wall is the rectangle L_cab x H_cab minus the triangle cut off by the windshield:
+A_side_face = L_cab * H_cab - run_windshield * rise_windshield / 2    # [m²]
+L_side      = A_side_face / H_cab      # length of the rectangle with the same height and area [m]
+V_cab       = A_side_face * W_cab      # volume of the prism = cross-section x width [m³]
 
 heading = 180.0         # compass direction the nose points to (180° = south = towards the sun at noon)
 
@@ -73,36 +108,51 @@ tinted_glass = Wall(name = "tinted tempered glass",
 # ==========================================================================================
 # 3. THE CABIN: list of heat-transfer surfaces                             (project item 5.a)
 # ==========================================================================================
-# face = (length along the driving direction, other length) of the WHOLE face of the box.
+# face = the two side lengths of the WHOLE face (a window and the panel around it share it).
+#   The first length is the one the driving wind travels along (L_flow), the second one is
+#   the length from the bottom edge to the top edge (L_slope, natural convection on a wall).
+#   When that default does not fit, L_flow / L_slope are given explicitly.
 # The floor and the rear wall are "sheltered": they get no sun and do not see the sky.
 #   - floor: sees the shaded ground/chassis under the cab, the driving wind passes under it
 #   - rear wall: faces the superstructure (pump/tank body) -> no wind either
+#
+# THE WINDSHIELD is the only inclined surface. What its inclination changes:
+#   - sun: the glass is turned towards the sky, so the rays hit it more perpendicularly
+#     (cos θ is computed from `tilt` and the position of the sun);
+#   - infrared: it sees more sky and less ground, F_sky = (1 + cos tilt)/2;
+#   - natural convection: inclined-plate rules, different outside and inside
+#     (see `natural_convection` in cabin_model.jl);
+#   - lengths: the air (wind or buoyancy) travels along the slope -> slant length.
 
-roof_face  = (L_cab, W_cab)
-side_face  = (L_cab, H_cab)
-front_face = (H_cab, W_cab)     # the air flows upwards over the front: flow length = height
+roof_face       = (L_roof, W_cab)
+floor_face      = (L_cab, W_cab)
+side_face       = (L_side, H_cab)               # rectangle with the same height and area
+panel_face      = (h_sill, W_cab)               # the air flows upwards over the front
+windshield_face = (slant_windshield, W_cab)     # ... and then up along the glass
+rear_face       = (H_cab, W_cab)
 
 surfaces = [
-    Surface(name = "Roof",          wall = cab_wall,     A = L_cab * W_cab - A_roof_window,
+    Surface(name = "Roof",          wall = cab_wall,     A = L_roof * W_cab - A_roof_window,
             tilt = 0.0, face = roof_face),
     Surface(name = "Roof window",   wall = tinted_glass, A = A_roof_window,
             tilt = 0.0, face = roof_face),
     Surface(name = "Floor",         wall = cab_floor,    A = L_cab * W_cab,
-            tilt = 180.0, face = roof_face, sheltered = true),
-    Surface(name = "Front panel",   wall = cab_wall,     A = W_cab * H_cab - A_windshield,
-            tilt = 90.0, azimuth = heading, face = front_face, L_vert = H_cab),
+            tilt = 180.0, face = floor_face, sheltered = true),
+    Surface(name = "Front panel",   wall = cab_wall,     A = W_cab * h_sill,
+            tilt = 90.0, azimuth = heading, face = panel_face, L_slope = h_sill),
     Surface(name = "Windshield",    wall = windshield_glass, A = A_windshield,
-            tilt = tilt_windshield, azimuth = heading, face = front_face, L_vert = H_cab),
-    Surface(name = "Left side",     wall = cab_wall,     A = L_cab * H_cab - A_side_window,
+            tilt = tilt_windshield, azimuth = heading, face = windshield_face,
+            L_slope = slant_windshield),
+    Surface(name = "Left side",     wall = cab_wall,     A = A_side_face - A_side_window,
             tilt = 90.0, azimuth = heading - 90, face = side_face),
     Surface(name = "Left window",   wall = tinted_glass, A = A_side_window,
             tilt = 90.0, azimuth = heading - 90, face = side_face),
-    Surface(name = "Right side",    wall = cab_wall,     A = L_cab * H_cab - A_side_window,
+    Surface(name = "Right side",    wall = cab_wall,     A = A_side_face - A_side_window,
             tilt = 90.0, azimuth = heading + 90, face = side_face),
     Surface(name = "Right window",  wall = tinted_glass, A = A_side_window,
             tilt = 90.0, azimuth = heading + 90, face = side_face),
     Surface(name = "Rear wall",     wall = cab_wall,     A = W_cab * H_cab,
-            tilt = 90.0, azimuth = heading + 180, face = front_face, L_vert = H_cab,
+            tilt = 90.0, azimuth = heading + 180, face = rear_face, L_slope = H_cab,
             sheltered = true, wind = 0.0),
 ]
 
@@ -160,9 +210,13 @@ heating = Case(
 # ==========================================================================================
 
 println("Rosenbauer Panther 6x6 - crew cab model")
-@printf("  box %.1f x %.1f x %.1f m, volume %.1f m3, glass %.2f m2, opaque %.2f m2\n",
-        L_cab, W_cab, H_cab, L_cab * W_cab * H_cab,
+@printf("  cab %.1f x %.1f x %.1f m with an inclined windshield, volume %.1f m3, glass %.2f m2, opaque %.2f m2\n",
+        L_cab, W_cab, H_cab, V_cab,
         sum(s.A for s in surfaces if s.wall.τ_sol > 0), sum(s.A for s in surfaces if s.wall.τ_sol == 0))
+@printf("  windshield: %.0f deg from the vertical, slant %.2f m (rise %.2f m, run %.2f m)\n",
+        rake_windshield, slant_windshield, rise_windshield, run_windshield)
+@printf("  front panel height %.2f m, roof length %.2f m, side face %.2f m2 each\n",
+        h_sill, L_roof, A_side_face)
 for w in (cab_wall, cab_floor, windshield_glass, tinted_glass)
     @printf("  %-38s R_cond = %.4f m2K/W\n", w.name, R_cond(w))
 end
@@ -184,7 +238,6 @@ for r in results
 end
 
 # --- Summary ---
-V_cab = L_cab * W_cab * H_cab
 println("\n", "="^120)
 println(" Summary")
 println("="^120)
