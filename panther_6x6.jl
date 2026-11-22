@@ -7,10 +7,6 @@ This is the file to RUN. It contains the DATA of the vehicle and of the two desi
 (one cooling case, one heating case). The physics is in `cabin_model.jl`.
 
 Run:  julia panther_6x6.jl
-
-Every value marked  [SPEC]  comes from the Rosenbauer documents,
-every value marked  [NORM]  comes from a standard,
-every value marked  [ASSUMED]  is an engineering estimate: to justify (or change) in the report.
 =#
 
 include("cabin_model.jl")
@@ -18,42 +14,20 @@ include("cabin_model.jl")
 # ==========================================================================================
 # 1. THE CABIN: geometry
 # ==========================================================================================
-# The crew cab is simplified to a box with the upper front edge cut off by the inclined
-# windshield (a prism: the same cross-section over the whole width). Side view:
-#
-#                          L_roof
-#                   ____________________
-#                  /|                   |
-#                 /r|                   |          r = rake = angle between the
-#    windshield  /  | rise              |              glass and the vertical
-#    (slant)    /   |                   |  H_cab
-#              /    |                   |          (rear wall, against the
-#             /_____|                   |           superstructure)
-#            |  run                     |
-#     front  |                          |
-#     panel  | h_sill                   |
-#            |__________________________|
-#                       L_cab
-#        <-- driving direction
-#
-# Dimensions estimated from the dimensional drawing of the brochure (vehicle width 3.0 m,
-# height 3.65 m).
 
-L_cab = 2.6     # length at floor level, in the driving direction [m]          [ASSUMED from drawing]
-W_cab = 3.0     # width  [m]                                                   [SPEC: vehicle width]
-H_cab = 2.0     # height floor -> roof [m]                                     [ASSUMED from drawing]
 
-# Glazing. The brochure gives about 105 ft² = 9.75 m² of glass in total; split estimated:
-A_windshield  = 5.0     # [m²]                                                 [ASSUMED]
-A_side_window = 1.9     # per side [m²]                                        [ASSUMED]
-A_roof_window = 0.95    # [m²]                                                 [ASSUMED]
+L_cab = 2.6     # length at floor level, in the driving direction [m]          
+W_cab = 3.0     # width  [m]                                                   
+H_cab = 2.0     # height floor -> roof [m]                                     
 
-# The windshield leans backwards. `rake` = angle between the glass and the VERTICAL.
-# (If the 40° is measured from the horizontal instead, put 50.0 here.)
-rake_windshield = 40.0                     # [°]                               [ASSUMED from drawing]
+A_windshield  = 5.0     # [m²]                                                 
+A_side_window = 1.9     # per side [m²]                                    
+A_roof_window = 0.95    # [m²]                                                 
+
+rake_windshield = 40.0                     # [°]                               
 tilt_windshield = 90.0 - rake_windshield   # angle between its normal and the vertical (model convention)
 
-# Everything else follows from these numbers. The windshield takes the full width of the cab:
+# Everything else
 slant_windshield = A_windshield / W_cab                 # length of the glass along the slope [m]
 rise_windshield  = slant_windshield * cosd(rake_windshield)   # height it covers [m]
 run_windshield   = slant_windshield * sind(rake_windshield)   # how far it leans back [m]
@@ -71,13 +45,9 @@ heading = 180.0         # compass direction the nose points to (180° = south = 
 # ==========================================================================================
 # 2. THE CABIN: wall constructions
 # ==========================================================================================
-# [SPEC] welded aluminium box sections with aluminium sheets, insulated; laminated windshield,
-#        tempered side and roof windows; solar-control film: the windshield lets ≈ 35 % of the
-#        solar radiation through; the other windows are tinted.
-# Thicknesses and conductivities are typical values                            [ASSUMED]
 
-paint_α = 0.65      # solar absorptance of the paint (red/yellow)              [ASSUMED]
-paint_ε = 0.90      # infrared emissivity of paint                             [ASSUMED]
+paint_α = 0.65      # solar absorptance of the paint (red/yellow)             
+paint_ε = 0.90      # infrared emissivity of paint                             
 glass_ε = 0.84      # infrared emissivity of uncoated glass
 
 cab_wall = Wall(name = "aluminium + insulation + lining",
@@ -96,33 +66,18 @@ cab_floor = Wall(name = "aluminium + insulation + rubber mat",
 windshield_glass = Wall(name = "laminated glass + solar film",
                         layers = [Layer("glass", 0.004, 1.0), Layer("PVB foil", 0.00076, 0.20),
                                   Layer("glass", 0.004, 1.0)],
-                        τ_sol = 0.35,          # [SPEC]
-                        α_sol = 0.40,          # [ASSUMED] (so 25 % is reflected)
+                        τ_sol = 0.35,          
+                        α_sol = 0.40,          # (so 25 % is reflected)
                         ε_ir = glass_ε)
 
 tinted_glass = Wall(name = "tinted tempered glass",
                     layers = [Layer("glass", 0.005, 1.0)],
-                    τ_sol = 0.50, α_sol = 0.43,   # [ASSUMED] typical grey-tinted glass
+                    τ_sol = 0.50, α_sol = 0.43,   # typical grey-tinted glass
                     ε_ir = glass_ε)
 
 # ==========================================================================================
-# 3. THE CABIN: list of heat-transfer surfaces                             (project item 5.a)
+# 3. THE CABIN: list of heat-transfer surfaces                             
 # ==========================================================================================
-# face = the two side lengths of the WHOLE face (a window and the panel around it share it).
-#   The first length is the one the driving wind travels along (L_flow), the second one is
-#   the length from the bottom edge to the top edge (L_slope, natural convection on a wall).
-#   When that default does not fit, L_flow / L_slope are given explicitly.
-# The floor and the rear wall are "sheltered": they get no sun and do not see the sky.
-#   - floor: sees the shaded ground/chassis under the cab, the driving wind passes under it
-#   - rear wall: faces the superstructure (pump/tank body) -> no wind either
-#
-# THE WINDSHIELD is the only inclined surface. What its inclination changes:
-#   - sun: the glass is turned towards the sky, so the rays hit it more perpendicularly
-#     (cos θ is computed from `tilt` and the position of the sun);
-#   - infrared: it sees more sky and less ground, F_sky = (1 + cos tilt)/2;
-#   - natural convection: inclined-plate rules, different outside and inside
-#     (see `natural_convection` in cabin_model.jl);
-#   - lengths: the air (wind or buoyancy) travels along the slope -> slant length.
 
 roof_face       = (L_roof, W_cab)
 floor_face      = (L_cab, W_cab)
@@ -159,48 +114,42 @@ surfaces = [
 # ==========================================================================================
 # 4. OCCUPANTS
 # ==========================================================================================
-# [SPEC] seating for up to 6 persons -> design with a full cab.
+#  seating for up to 6 persons -> design with a full cab.
 # Metabolic rates from the table of the course notes:
-#   seated, quiet 60 W/m² ; driving a heavy vehicle 185 W/m².
-# Clothing: insulated coveralls 1.37 clo, f_cl = 1.26 (defaults of `Person`).
 
 seated_crew_member = Person(M = 60.0)
 driver_driving     = Person(M = 185.0)
 
 # ==========================================================================================
-# 5. DESIGN CASES                                                           (project item 2-4)
+# 5. DESIGN CASES                                                          
 # ==========================================================================================
-# Fresh air: 0.57 m³/min per person   [NORM: MIL-STD-1472F 5.12.6.2]  (default of `Case`)
-# Supply air: at most 40 °C (as in PW4), at least 10 °C                         [ASSUMED]
 
-v_max = 120 / 3.6      # top speed [m/s]                                           [SPEC]
+v_max = 120 / 3.6      # top speed [km/h] --> [m/s]                                          
 
 # --- COOLING: hottest day of the design range, vehicle on stand-by on the apron in full sun ---
 cooling = Case(
     name   = "COOLING CASE - 43.5 degC, full sun, standing still, 6 occupants",
-    T_amb  = degC(43.5),            # upper limit of the design temperature range  [SPEC]
-    RH_amb = 0.15,                  # hot and dry                                  [ASSUMED]
+    T_amb  = degC(43.5),            # upper limit of the design temperature range  
+    RH_amb = 0.15,                  # hot and dry                                  
     v      = 0.0,                   # standing still, no wind: worst case
     hour   = 12.0,
     DNI    = 1000.0,                # clear day (course notes)
     sun_elevation = 62.6,           # solar noon on 21 June at 50.8° N: 90 - 50.8 + 23.4
     sun_azimuth   = 180.0,          # the sun is in the south at solar noon
-    T_ground = degC(43.5 + 15.0),   # sunlit concrete, warmer than the air         [ASSUMED]
+    T_ground = degC(43.5 + 15.0),   # sunlit concrete, warmer than the air       
     T_cab  = degC(22.0),            # upper end of the comfort range 20-22 °C
     crew   = fill(seated_crew_member, 6),
-    P_equipment = 300.0,            # radios, displays, electronics                [ASSUMED]
+    P_equipment = 300.0,            # radios, displays, electronics               
 )
 
-# --- HEATING: coldest day of the design range, at night, driving ---
-# [NORM: MIL-STD-1472F 5.12.6.1] heater sized at the minimum design temperature with the
-# vehicle moving at 2/3 of its maximum speed; cabin above 20 °C.
+# --- HEATING: coldest day of the design range, at night, driving 2/3 speed max ---
 heating = Case(
     name   = "HEATING CASE - 0 degC, night, driving at 80 km/h, 6 occupants",
-    T_amb  = degC(0.0),             # lower limit of the design temperature range  [SPEC]
-    RH_amb = 0.80,                  #                                              [ASSUMED]
-    v      = 2 / 3 * v_max,         # 80 km/h                                      [NORM]
+    T_amb  = degC(0.0),             # lower limit of the design temperature range  
+    RH_amb = 0.80,                  #                                              
+    v      = 2 / 3 * v_max,         # 80 km/h                                     
     hour   = 4.0,                   # night: no sun, clear (cold) sky
-    T_cab  = degC(20.0),            #                                              [NORM]
+    T_cab  = degC(20.0),            #                                             
     crew   = [driver_driving; fill(seated_crew_member, 5)],
     P_equipment = 0.0,              # no help from equipment: worst case
 )
@@ -225,7 +174,7 @@ results = [solve_case(surfaces, case) for case in (cooling, heating)]
 foreach(print_report, results)
 
 # --- Check against the insulation requirement of the vehicle specification ---
-# [SPEC] average heat loss of the cab ≤ 0.24 BTU/(h ft² °F) = 1.36 W/m²K (opaque walls).
+# average heat loss of the cab ≤ 0.24 BTU/(h ft² °F) = 1.36 W/m²K (opaque walls).
 println("\n", "="^120)
 println(" Checks")
 println("="^120)
