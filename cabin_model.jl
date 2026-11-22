@@ -4,24 +4,7 @@ cabin_model.jl
 Steady-state thermal model of a vehicle cabin.
 
 This file contains ONLY the physics (functions and data types). It knows nothing
-about the Panther: the vehicle data and the design cases are in `panther_6x6.jl`.
-
-Structure of the file (same order as the calculation):
-    1. Constants and small helpers
-    2. Moist air (psychrometrics)
-    3. Data types: Layer, Wall, Surface, Person, Case
-    4. Ambient conditions (humidity, sky temperature)
-    5. Convection coefficients (natural / forced / mixed)
-    6. Energy balance of ONE surface                (project item 5.a - 5.d)
-    7. Heat released by the occupants               (PW5)
-    8. Cabin balance, ventilation, recirculation    (project item 5.e - 5.h and 6)
-    9. Solve a complete case
-   10. Printing of the results
-
-UNITS: everything inside the model is in plain SI:
-    temperature [K], length [m], area [m²], power [W], pressure [Pa],
-    mass flow [kg dry air / s], humidity ratio x [kg water / kg dry air].
-Temperatures are typed in °C in the input file with `degC(...)` and printed in °C.
+about the Panther.
 
 SIGN CONVENTION (same as PW4): a heat flow is POSITIVE when it flows TOWARDS THE CABIN.
 =#
@@ -120,19 +103,6 @@ R_cond(w::Wall) = sum(l.d / l.k for l in w.layers)
 
 """
 One heat-transfer surface of the cabin (a wall panel or a window).
-
-`tilt` is the angle between the outward normal and the vertical:
-    0° = faces the sky (roof), 90° = vertical wall, 180° = faces the ground (floor).
-    In between the surface is INCLINED: a windshield that leans 40° backwards has tilt = 50°.
-`azimuth` is the compass direction the surface faces (0° = N, 90° = E, 180° = S, 270° = W).
-
-A window and the panel around it are two `Surface`s that belong to the same FACE of the
-cabin. The convection correlations need the size of the whole face, not of the part:
-    `face`    = the two side lengths of the whole face; for a horizontal face the first
-                one is the length along the driving direction                        [m]
-    `L_flow`  = length the outside air travels along the face (forced convection)    [m]
-    `L_slope` = length from the bottom edge to the top edge, measured ALONG the surface
-                (natural convection on a wall; = the height for a vertical wall)     [m]
 """
 Base.@kwdef struct Surface
     name::String
@@ -147,7 +117,7 @@ Base.@kwdef struct Surface
     wind::Float64 = 1.0              # fraction of the vehicle speed felt by this surface (0..1)
 end
 
-"One occupant (PW5). Defaults: fire-fighter in insulated coveralls, seated."
+"One occupant. Defaults: fire-fighter in insulated coveralls, seated."
 Base.@kwdef struct Person
     M::Float64                 # metabolic rate per m² of body surface [W/m²]
     I_cl::Float64 = 1.37       # clothing insulation, standing value [clo]
@@ -241,30 +211,6 @@ end
 Natural convection on one side of surface `s`. `tilt` is the tilt of THAT side:
 the outside of the roof faces up (0°), but the inside of the roof faces down (180°).
 
-First question: is this side STABLE or UNSTABLE?
-  * UNSTABLE = hot side facing up, or cold side facing down. The warm air wants to rise
-    away from the surface (or the cold air to fall away from it): it leaves the surface
-    as plumes, which mixes the air well -> high h.
-  * STABLE   = hot side facing down, or cold side facing up. The air is pressed against
-    the surface and can only creep along it -> low h.
-
-Five configurations (A Heat Transfer Textbook, section 8.4):
-  * vertical             : eq. 8.13b (Churchill-Chu), L = height
-  * horizontal, unstable : eq. 8.35 (Ra ≥ 1e7) or 8.37a (Ra < 1e7), L = area/perimeter
-  * horizontal, stable   : eq. 8.38, L = short side of the plate
-  * INCLINED, stable     : the air slides along the plate, driven by the part of gravity
-                           that is parallel to the plate -> vertical-plate formula for a
-                           laminar boundary layer (eq. 8.13a) with g replaced by g_along
-  * INCLINED, unstable   : two mechanisms compete (rule of Raithby & Hollands):
-                           (1) flow along the plate : vertical formula with g_along
-                           (2) plumes leaving the plate : horizontal formula with g_normal
-                           compute both and keep the LARGER heat transfer coefficient.
-
-The two components of gravity, with `tilt` = angle between the normal and the vertical:
-    g_along  = g·sin(tilt)      (the textbook writes g·cos θ, θ measured from the vertical)
-    g_normal = g·|cos(tilt)|    (the textbook writes g·sin θ)
-
-Air properties at the film temperature (average of surface and air), β = 1/T_film.
 """
 function natural_convection(s::Surface, tilt, T_s, T_air, p)
     air = air_properties((T_s + T_air) / 2, p)
@@ -566,18 +512,6 @@ end
 """
     air_handling(c, amb, ṁ_fresh, ṁ_total, T_vent, ṁ_w)
 
-State of the air around the loop  outside -> mixing box -> heat exchanger -> cabin.
-ṁ_total is blown into the cabin at T_vent; ṁ_fresh of it is outside air, the rest
-(ṁ_total - ṁ_fresh) is cabin air that is recirculated. ṁ_w = water vapour from the crew.
-
-Water balance. Without condensation all the water of the crew leaves with the fresh air:
-    x_cab = x_out + ṁ_w/ṁ_fresh
-If the mixed air holds more water than saturated air at T_vent can hold, the surplus
-condenses on the cooling coil (ideal coil: air leaves saturated at T_vent). Then:
-    x_supply = x_sat(T_vent)   and   x_cab = x_supply + ṁ_w/ṁ_total
-
-Heat exchanger power (positive = heating, negative = cooling):
-    Q_hx = ṁ_total·[h(T_vent, x_supply) - h_mix]
 """
 function air_handling(c::Case, amb, ṁ_fresh, ṁ_total, T_vent, ṁ_w)
     ṁ_rec = ṁ_total - ṁ_fresh
@@ -608,13 +542,6 @@ end
 """
     ventilation(c, amb, Q_walls, P_sens, P_lat, V_fresh)
 
-Cabin energy balance (PW4):   ṁ·cp·(T_vent - T_cab) + P_sens + Q_walls = 0
-(the latent heat does not appear: it leaves as water vapour, see the water balance).
-
- g) With the hygienic minimum of fresh air `V_fresh` [m³/s]: which T_vent is needed?
- h) If that T_vent is outside the allowed limits: fix T_vent at the limit, compute the
-    (larger) flow that is then needed, and recirculate everything above the fresh-air minimum.
- 6) Power of the heat exchanger.
 """
 function ventilation(c::Case, amb, Q_walls, P_sens, P_lat, V_fresh)
     Q_load  = Q_walls + P_sens              # sensible heat entering the cabin air [W]
@@ -668,8 +595,6 @@ end
 """
     solve_case(surfaces, c)
 
-1. ambient conditions -> 2. every surface on its own (T_cab is imposed, so the surfaces do
-not influence each other) -> 3. occupants -> 4. cabin balance and ventilation.
 """
 function solve_case(surfaces::Vector{Surface}, c::Case)
     amb   = ambient(c)
